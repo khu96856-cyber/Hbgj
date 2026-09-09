@@ -1,0 +1,149 @@
+-- Combined Battleground Server Script
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local Debris = game:GetService("Debris")
+
+-- 1. สร้าง RemoteEvents อัตโนมัติ
+local combatEvent = ReplicatedStorage:FindFirstChild("CombatEvent") or Instance.new("RemoteEvent", ReplicatedStorage)
+combatEvent.Name = "CombatEvent"
+
+local tpEvent = ReplicatedStorage:FindFirstChild("TeleportEvent") or Instance.new("RemoteEvent", ReplicatedStorage)
+tpEvent.Name = "TeleportEvent"
+
+-- 2. ตั้งค่าระบบต่อสู้ & วาร์ป
+local BASE_DAMAGE = 12
+local FINISHER_DAMAGE = 25
+local ATTACK_RANGE = 6
+local TP_MAX_DISTANCE = 100
+
+local attackCooldowns = {}
+local dashCooldowns = {}
+local tpCooldowns = {}
+
+-- ฟังก์ชันสร้าง เอฟเฟกต์การวาร์ป (เสียง + Particle)
+local function createTeleportEffect(position)
+	local part = Instance.new("Part")
+	part.Size = Vector3.new(1, 1, 1)
+	part.Position = position
+	part.Anchored = true
+	part.CanCollide = false
+	part.Transparency = 1
+	part.Parent = workspace
+
+	local particle = Instance.new("ParticleEmitter")
+	particle.Texture = "rbxassetid://258121656"
+	particle.Rate = 100
+	particle.Speed = NumberRange.new(5, 10)
+	particle.Lifetime = NumberRange.new(0.3, 0.6)
+	particle.Size = NumberSequence.new(2, 0)
+	particle.Parent = part
+
+	local sound = Instance.new("Sound")
+	sound.SoundId = "rbxassetid://210114813"
+	sound.Volume = 0.8
+	sound.Parent = part
+	sound:Play()
+
+	particle:Emit(30)
+	Debris:AddItem(part, 1)
+end
+
+-- 3. ระบบจัดการการโจมตี และ Dash
+combatEvent.OnServerEvent:Connect(function(player, actionType, combo)
+	local character = player.Character
+	if not character then return end
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	local humanoid = character:FindFirstChild("Humanoid")
+	if not hrp or not humanoid or humanoid.Health <= 0 then return end
+
+	local currentTime = os.clock()
+
+	if actionType == "Attack" then
+		if attackCooldowns[player] and (currentTime - attackCooldowns[player] < 0.25) then return end
+		attackCooldowns[player] = currentTime
+
+		local damage = (combo == 4) and FINISHER_DAMAGE or BASE_DAMAGE
+		local knockbackPower = (combo == 4) and 60 or 15
+
+		for _, target in ipairs(workspace:GetChildren()) do
+			if target:IsA("Model") and target ~= character then
+				local targetHrp = target:FindFirstChild("HumanoidRootPart")
+				local targetHumanoid = target:FindFirstChild("Humanoid")
+
+				if targetHrp and targetHumanoid and targetHumanoid.Health > 0 then
+					local distance = (hrp.Position - targetHrp.Position).Magnitude
+					if distance <= ATTACK_RANGE then
+						local direction = (targetHrp.Position - hrp.Position).Unit
+						if hrp.CFrame.LookVector:Dot(direction) > 0.2 then
+							targetHumanoid:TakeDamage(damage)
+
+							local bv = Instance.new("BodyVelocity")
+							bv.Velocity = hrp.CFrame.LookVector * knockbackPower + Vector3.new(0, 10, 0)
+							bv.MaxForce = Vector3.new(100000, 100000, 100000)
+							bv.Parent = targetHrp
+							Debris:AddItem(bv, 0.15)
+						end
+					end
+				end
+			end
+		end
+
+	elseif actionType == "Dash" then
+		if dashCooldowns[player] and (currentTime - dashCooldowns[player] < 2.5) then return end
+		dashCooldowns[player] = currentTime
+
+		local bv = Instance.new("BodyVelocity")
+		bv.Velocity = hrp.CFrame.LookVector * 75
+		bv.MaxForce = Vector3.new(100000, 0, 100000)
+		bv.Parent = hrp
+		Debris:AddItem(bv, 0.2)
+	end
+end)
+
+-- 4. ระบบวาร์ปไปหาคนที่ใกล้ที่สุด
+tpEvent.OnServerEvent:Connect(function(player)
+	local currentTime = os.clock()
+	if tpCooldowns[player] and (currentTime - tpCooldowns[player] < 5) then return end
+
+	local character = player.Character
+	if not character then return end
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	local humanoid = character:FindFirstChild("Humanoid")
+	if not hrp or not humanoid or humanoid.Health <= 0 then return end
+
+	local closestHrp = nil
+	local shortestDistance = TP_MAX_DISTANCE
+
+	for _, targetPlayer in ipairs(Players:GetPlayers()) do
+		if targetPlayer ~= player and targetPlayer.Character then
+			local targetHrp = targetPlayer.Character:FindFirstChild("HumanoidRootPart")
+			local targetHumanoid = targetPlayer.Character:FindFirstChild("Humanoid")
+
+			if targetHrp and targetHumanoid and targetHumanoid.Health > 0 then
+				local distance = (hrp.Position - targetHrp.Position).Magnitude
+				if distance < shortestDistance then
+					shortestDistance = distance
+					closestHrp = targetHrp
+				end
+			end
+		end
+	end
+
+	if closestHrp then
+		tpCooldowns[player] = currentTime
+		createTeleportEffect(hrp.Position)
+		hrp.CFrame = closestHrp.CFrame * CFrame.new(0, 0, 3)
+		createTeleportEffect(hrp.Position)
+	end
+end)
+
+-- 5. ระบบเกิดใหม่ทันที (Fast Respawn)
+Players.PlayerAdded:Connect(function(player)
+	player.CharacterAdded:Connect(function(character)
+		local humanoid = character:WaitForChild("Humanoid")
+		humanoid.Died:Connect(function()
+			task.wait(1.5)
+			player:LoadCharacter()
+		end)
+	end)
+end)
